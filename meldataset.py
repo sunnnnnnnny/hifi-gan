@@ -2,11 +2,14 @@ import math
 import os
 import random
 import torch
+from glob import glob
 import torch.utils.data
 import numpy as np
+import librosa
 from librosa.util import normalize
 from scipy.io.wavfile import read
 from librosa.filters import mel as librosa_mel_fn
+random.seed(616)
 
 MAX_WAV_VALUE = 32768.0
 
@@ -54,7 +57,7 @@ def mel_spectrogram(y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin,
 
     global mel_basis, hann_window
     if fmax not in mel_basis:
-        mel = librosa_mel_fn(sampling_rate, n_fft, num_mels, fmin, fmax)
+        mel = librosa_mel_fn(sr=sampling_rate, n_fft=n_fft, n_mels=num_mels, fmin=fmin, fmax=fmax)
         mel_basis[str(fmax)+'_'+str(y.device)] = torch.from_numpy(mel).float().to(y.device)
         hann_window[str(y.device)] = torch.hann_window(win_size).to(y.device)
 
@@ -62,7 +65,7 @@ def mel_spectrogram(y, n_fft, num_mels, sampling_rate, hop_size, win_size, fmin,
     y = y.squeeze(1)
 
     spec = torch.stft(y, n_fft, hop_length=hop_size, win_length=win_size, window=hann_window[str(y.device)],
-                      center=center, pad_mode='reflect', normalized=False, onesided=True)
+                      center=center, pad_mode='reflect', normalized=False, onesided=True,return_complex=False)
 
     spec = torch.sqrt(spec.pow(2).sum(-1)+(1e-9))
 
@@ -86,7 +89,7 @@ def get_dataset_filelist(a):
 class MelDataset(torch.utils.data.Dataset):
     def __init__(self, training_files, segment_size, n_fft, num_mels,
                  hop_size, win_size, sampling_rate,  fmin, fmax, split=True, shuffle=True, n_cache_reuse=1,
-                 device=None, fmax_loss=None, fine_tuning=False, base_mels_path=None):
+                 device=None, fmax_loss=None, fine_tuning=False, base_mels_path=None, base_wav_dir="/Users/zhangsan/PycharmProjects/finetune_fs2/dongdie_record_first_22k"):
         self.audio_files = training_files
         random.seed(1234)
         if shuffle:
@@ -107,9 +110,28 @@ class MelDataset(torch.utils.data.Dataset):
         self.device = device
         self.fine_tuning = fine_tuning
         self.base_mels_path = base_mels_path
+        self.base_wav_dir = base_wav_dir
+        self.wav_path_data_map = {}
+        self.keys = []
+        names_set = set()
+        input_dir = "/Users/zhangsan/PycharmProjects/finetune_fs2/dongdie_record_first_mel_finetune"
+        mel_path_list = glob(input_dir + "/*npy")
+        for mel_path in mel_path_list:
+            filename = mel_path.split("/")[-1]
+            name = filename.split(".")[0].split("_")[-1]
+            names_set.add(name)
+        names_list = list(names_set)
+        names_list.sort()
+        self.keys = names_list
+        self.key2mel_list = {}
+        for key in self.keys:
+            mel_list = glob(input_dir + "/mel_*_{}.npy".format(key))
+            mel_list.sort()
+            self.key2mel_list[key] = mel_list
 
     def __getitem__(self, index):
-        filename = self.audio_files[index]
+        key = self.keys[index]
+        filename = os.path.join(self.base_wav_dir, key + ".wav")
         if self._cache_ref_count == 0:
             audio, sampling_rate = load_wav(filename)
             audio = audio / MAX_WAV_VALUE
@@ -140,8 +162,9 @@ class MelDataset(torch.utils.data.Dataset):
                                   self.sampling_rate, self.hop_size, self.win_size, self.fmin, self.fmax,
                                   center=False)
         else:
-            mel = np.load(
-                os.path.join(self.base_mels_path, os.path.splitext(os.path.split(filename)[-1])[0] + '.npy'))
+            mel_path_list = self.key2mel_list[key]
+            mel_path = random.sample(mel_path_list, 1)[0]
+            mel = np.load(mel_path).T
             mel = torch.from_numpy(mel)
 
             if len(mel.shape) < 3:

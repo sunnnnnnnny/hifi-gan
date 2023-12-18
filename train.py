@@ -27,7 +27,8 @@ def train(rank, a, h):
                            world_size=h.dist_config['world_size'] * h.num_gpus, rank=rank)
 
     torch.cuda.manual_seed(h.seed)
-    device = torch.device('cuda:{:d}'.format(rank))
+    # device = torch.device('cuda:{:d}'.format(rank))
+    device = torch.device('cpu')
 
     generator = Generator(h).to(device)
     mpd = MultiPeriodDiscriminator().to(device)
@@ -43,17 +44,21 @@ def train(rank, a, h):
         cp_do = scan_checkpoint(a.checkpoint_path, 'do_')
 
     steps = 0
-    if cp_g is None or cp_do is None:
+    cp_g = "./cp_hifigan/generator_universal.pth.tar"
+
+    if cp_g is None and cp_do is None:
         state_dict_do = None
         last_epoch = -1
     else:
-        state_dict_g = load_checkpoint(cp_g, device)
-        state_dict_do = load_checkpoint(cp_do, device)
+        if cp_g is not None:
+            state_dict_g = load_checkpoint(cp_g, device)
+        if cp_do is not None:
+            state_dict_do = load_checkpoint(cp_do, device)
+            mpd.load_state_dict(state_dict_do['mpd'])
+            msd.load_state_dict(state_dict_do['msd'])
         generator.load_state_dict(state_dict_g['generator'])
-        mpd.load_state_dict(state_dict_do['mpd'])
-        msd.load_state_dict(state_dict_do['msd'])
-        steps = state_dict_do['steps'] + 1
-        last_epoch = state_dict_do['epoch']
+        steps = 1
+        last_epoch = 0
 
     if h.num_gpus > 1:
         generator = DistributedDataParallel(generator, device_ids=[rank]).to(device)
@@ -64,7 +69,7 @@ def train(rank, a, h):
     optim_d = torch.optim.AdamW(itertools.chain(msd.parameters(), mpd.parameters()),
                                 h.learning_rate, betas=[h.adam_b1, h.adam_b2])
 
-    if state_dict_do is not None:
+    if cp_do is not None:
         optim_g.load_state_dict(state_dict_do['optim_g'])
         optim_d.load_state_dict(state_dict_do['optim_d'])
 
@@ -77,6 +82,7 @@ def train(rank, a, h):
                           h.hop_size, h.win_size, h.sampling_rate, h.fmin, h.fmax, n_cache_reuse=0,
                           shuffle=False if h.num_gpus > 1 else True, fmax_loss=h.fmax_for_loss, device=device,
                           fine_tuning=a.fine_tuning, base_mels_path=a.input_mels_dir)
+    trainset.__getitem__(0)
 
     train_sampler = DistributedSampler(trainset) if h.num_gpus > 1 else None
 
@@ -230,18 +236,18 @@ def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--group_name', default=None)
-    parser.add_argument('--input_wavs_dir', default='LJSpeech-1.1/wavs')
+    parser.add_argument('--input_wavs_dir', default='interal-data/dongdie_record_first_22k')
     parser.add_argument('--input_mels_dir', default='ft_dataset')
-    parser.add_argument('--input_training_file', default='LJSpeech-1.1/training.txt')
-    parser.add_argument('--input_validation_file', default='LJSpeech-1.1/validation.txt')
+    parser.add_argument('--input_training_file', default='interal-data/training.txt')
+    parser.add_argument('--input_validation_file', default='interal-data/validation.txt')
     parser.add_argument('--checkpoint_path', default='cp_hifigan')
-    parser.add_argument('--config', default='')
+    parser.add_argument('--config', default='config_v1.json')
     parser.add_argument('--training_epochs', default=3100, type=int)
     parser.add_argument('--stdout_interval', default=5, type=int)
     parser.add_argument('--checkpoint_interval', default=5000, type=int)
     parser.add_argument('--summary_interval', default=100, type=int)
     parser.add_argument('--validation_interval', default=1000, type=int)
-    parser.add_argument('--fine_tuning', default=False, type=bool)
+    parser.add_argument('--fine_tuning', default=True, type=bool)
 
     a = parser.parse_args()
 
@@ -261,10 +267,10 @@ def main():
     else:
         pass
 
-    if h.num_gpus > 1:
-        mp.spawn(train, nprocs=h.num_gpus, args=(a, h,))
-    else:
-        train(0, a, h)
+    # if h.num_gpus > 1:
+    #     mp.spawn(train, nprocs=h.num_gpus, args=(a, h,))
+    # else:
+    train(0, a, h)
 
 
 if __name__ == '__main__':
